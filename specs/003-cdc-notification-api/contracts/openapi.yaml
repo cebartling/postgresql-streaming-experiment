@@ -1,0 +1,394 @@
+openapi: 3.0.0
+info:
+  title: Change Data Capture Notification API
+  description: Real-time database change notifications via LISTEN/NOTIFY pattern
+  version: 1.0.0
+  contact:
+    name: CDC Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Development server
+  - url: https://api.example.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns service status and CDC stream health
+      operationId: getHealth
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/subscriptions:
+    post:
+      summary: Create a new subscription
+      description: Register client interest in change events for specific tables
+      operationId: createSubscription
+      tags:
+        - Subscriptions
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '400':
+          description: Invalid subscription request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - API key lacks permission for requested tables
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      summary: List active subscriptions
+      description: List all subscriptions for authenticated client
+      operationId: listSubscriptions
+      tags:
+        - Subscriptions
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: List of subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubscriptionResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+
+  /v1/subscriptions/{subscriptionId}:
+    get:
+      summary: Get subscription details
+      description: Retrieve details of a specific subscription
+      operationId: getSubscription
+      tags:
+        - Subscriptions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Subscription identifier
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Subscription not found
+
+    delete:
+      summary: Cancel subscription
+      description: Unsubscribe from change events
+      operationId: deleteSubscription
+      tags:
+        - Subscriptions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Subscription cancelled
+        '401':
+          description: Unauthorized
+        '404':
+          description: Subscription not found
+
+  /v1/state/{tableName}/{rowId}:
+    get:
+      summary: Get current data state
+      description: Query current state of a row after reconnection to catch up
+      operationId: getState
+      tags:
+        - State
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: tableName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of table
+        - name: rowId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Row identifier
+      responses:
+        '200':
+          description: Current row state
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Current data state (fields depend on table)
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - no permission for this table
+        '404':
+          description: Row not found
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Overall service status
+        timestamp:
+          type: string
+          format: date-time
+          description: Response timestamp
+        services:
+          type: object
+          description: Status of individual services
+          properties:
+            postgresql:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [healthy, degraded, unhealthy]
+                lag:
+                  type: number
+                  description: Event lag in seconds
+            websocket:
+              type: object
+              properties:
+                status:
+                  type: string
+                activeConnections:
+                  type: integer
+        uptime:
+          type: number
+          description: Service uptime in seconds
+
+    SubscriptionRequest:
+      type: object
+      required:
+        - tables
+      properties:
+        tables:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: List of table names to subscribe to
+        filters:
+          type: object
+          description: Optional filter criteria (reserved for future use)
+
+    SubscriptionResponse:
+      type: object
+      required:
+        - subscriptionId
+        - tables
+        - createdAt
+        - status
+      properties:
+        subscriptionId:
+          type: string
+          format: uuid
+          description: Unique subscription identifier
+        tables:
+          type: array
+          items:
+            type: string
+          description: Subscribed tables
+        createdAt:
+          type: string
+          format: date-time
+          description: Subscription creation time
+        status:
+          type: string
+          enum: [active, paused, expired]
+          description: Subscription status
+        queuedEventsCount:
+          type: integer
+          description: Number of events pending delivery
+        lastEventAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last received event
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - timestamp
+      properties:
+        error:
+          type: string
+          description: Error code or message
+        message:
+          type: string
+          description: Human-readable error description
+        details:
+          type: object
+          description: Additional error context
+        timestamp:
+          type: string
+          format: date-time
+          description: Error occurrence time
+        requestId:
+          type: string
+          format: uuid
+          description: Request identifier for debugging
+
+    CDCEvent:
+      type: object
+      required:
+        - type
+        - eventId
+        - tableName
+        - operation
+        - timestamp
+        - version
+      properties:
+        type:
+          type: string
+          enum: [cdc_event]
+          description: Message type indicator
+        eventId:
+          type: string
+          format: uuid
+          description: Unique event identifier
+        tableName:
+          type: string
+          description: Source table name
+        operation:
+          type: string
+          enum: [INSERT, UPDATE, DELETE]
+          description: Change operation type
+        data:
+          type: object
+          description: Row data after operation (null for DELETE)
+        beforeData:
+          type: object
+          nullable: true
+          description: Row data before operation (UPDATE/DELETE only)
+        timestamp:
+          type: string
+          format: date-time
+          description: Change timestamp
+        version:
+          type: integer
+          description: Event schema version
+
+    SubscriptionConfirmation:
+      type: object
+      required:
+        - type
+        - subscriptionId
+        - status
+      properties:
+        type:
+          type: string
+          enum: [subscription_confirmed]
+        subscriptionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [confirmed, rejected]
+        message:
+          type: string
+          nullable: true
+
+    ErrorMessage:
+      type: object
+      required:
+        - type
+        - error
+      properties:
+        type:
+          type: string
+          enum: [error]
+        error:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable error message
+        timestamp:
+          type: string
+          format: date-time
+
+tags:
+  - name: System
+    description: Service health and status
+  - name: Subscriptions
+    description: Manage change event subscriptions
+  - name: State
+    description: Query current data state
